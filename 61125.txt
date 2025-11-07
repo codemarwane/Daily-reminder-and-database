@@ -1,0 +1,11 @@
+6/11/25	
+
+Objectif
+   1 -> Faire un trait et changement de couleur apres avoir cheker et un temp definies de 5 minute pour s'effacer automatiquement 
+   2 -> Faire une base de donnée pour ce projet 
+   
+
+
+
+
+link Github : https://github.com/codemarwane/Daily-reminder-Personnaliser.git
