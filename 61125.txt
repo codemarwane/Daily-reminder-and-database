@@ -1,11 +1,12 @@
-6/11/25	
+8/11/25	
 
 Objectif
-   1 -> Faire un trait et changement de couleur apres avoir cheker et un temp definies de 5 minute pour s'effacer automatiquement 
-   2 -> Faire une base de donnée pour ce projet 
-   
+   1 -> reponsive design  , ajouter un logo
+   2 ->  changer de theme (adequate avec Room Tech) , et de caracteristique
+   3 -> que le front end et le back end s'active une fois    
 
 
 
 
 link Github : https://github.com/codemarwane/Daily-reminder-Personnaliser.git
+

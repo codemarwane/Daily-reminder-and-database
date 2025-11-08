@@ -1,121 +1,155 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-// SQLite (synchronous) for simple local DB storage
-const Database = require('better-sqlite3');
+
+// Charger les variables d'environnement depuis un fichier .env (si présent)
+require('dotenv').config();
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-// Basic JSON parsing
+
+
+//----------------------------------------Coté BD-------------------------------------//
+
+// Connexion à MySQL (pool + promise API)
+const mysql = require('mysql2');
+
+// Utiliser les variables d'environnement si disponibles, sinon valeurs par défaut
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || '127.0.0.1',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASS || '',
+  database: process.env.DB_NAME || 'todo_db',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
+
+const db = pool.promise();
+
+db.getConnection()
+  .then((conn) => {
+    conn.release();
+    console.log(`Connected to MySQL (${process.env.DB_HOST || '127.0.0.1'})`);
+  })
+  .catch((err) => {
+    console.error('ERROR MySQL:', err);
+  });
+
+
+// Middleware pour parser le JSON
 app.use(express.json());
 
-// Simple CORS middleware for development
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
+// Security, logging and CORS
+try {
+  const cors = require('cors');
+  const helmet = require('helmet');
+  const morgan = require('morgan');
+  app.use(cors());
+  app.use(helmet());
+  app.use(morgan('dev'));
+} catch (e) {
+  console.warn('Optional middleware not installed (cors/helmet/morgan). Install them for better security/logging.');
+}
 
-// Initialize SQLite DB
-const dbDir = path.join(__dirname);
-if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-const dbPath = path.join(dbDir, 'data.db');
-const db = new Database(dbPath);
-db.prepare(
-  `CREATE TABLE IF NOT EXISTS todos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    priority TEXT NOT NULL
-  )`
-).run();
-
-// Test endpoint for frontend/backend connection
-app.get('/api/ping', (req, res) => {
-  res.json({ message: 'pong', time: new Date().toISOString() });
-});
-
-// --- Todos API (CRUD) backed by SQLite ---
-
-// Get all todos
-app.get('/api/todos', (req, res) => {
+// Get all todos (MySQL)
+// GET /api/todos
+app.get('/api/todos', async (req, res, next) => {
   try {
-    const rows = db.prepare('SELECT id, title, priority FROM todos ORDER BY id').all();
+    const [rows] = await db.query('SELECT id, title, priority FROM todos ORDER BY id');
     res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch todos' });
+    next(err);
   }
 });
+
 
 // Create a new todo
-app.post('/api/todos', (req, res) => {
-  const { title, priority } = req.body || {};
-  if (!title || !priority) {
-    return res.status(400).json({ error: 'title and priority are required' });
+// POST /api/todos
+let body, validationResult;
+try {
+  const ev = require('express-validator');
+  body = ev.body;
+  validationResult = ev.validationResult;
+} catch (e) {
+  // fallback: no-op validators if package not installed
+  body = () => ({ isString: () => ({ notEmpty: () => (req, res, next) => next() }), isIn: () => (req, res, next) => next() });
+  validationResult = () => ({ isEmpty: () => true, array: () => [] });
+  console.warn('express-validator not installed; request bodies will not be validated.');
+}
+
+app.post('/api/todos', [ body('title').isString().notEmpty(), body('priority').isIn(['urgent','medium','low']) ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty && !errors.isEmpty()) return res.status(400).json({ errors: errors.array ? errors.array() : errors });
+      const { title, priority } = req.body || {};
+      const [result] = await db.query('INSERT INTO todos (title, priority) VALUES (?, ?)', [title, priority]);
+      const [rows] = await db.query('SELECT id, title, priority FROM todos WHERE id = ?', [result.insertId]);
+      res.status(201).json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
   }
+);
+
+// Update a todo
+app.put('/api/todos/:id', async (req, res, next) => {
   try {
-    const stmt = db.prepare('INSERT INTO todos (title, priority) VALUES (?, ?)');
-    const info = stmt.run(title, priority);
-    const todo = db.prepare('SELECT id, title, priority FROM todos WHERE id = ?').get(info.lastInsertRowid);
-    res.status(201).json(todo);
+    const { id } = req.params;
+    const { title, priority } = req.body || {};
+    if (!title || !priority) return res.status(400).json({ error: 'title and priority are required' });
+    const [result] = await db.query('UPDATE todos SET title = ?, priority = ? WHERE id = ?', [title, priority, id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Todo not found' });
+    const [rows] = await db.query('SELECT id, title, priority FROM todos WHERE id = ?', [id]);
+    res.json(rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create todo' });
+    next(err);
   }
 });
 
-// Import todos in bulk from client
-app.post('/api/todos/import', (req, res) => {
-  const items = Array.isArray(req.body.todos) ? req.body.todos : [];
-  if (items.length === 0) return res.status(400).json({ error: 'todos required' });
+// Delete a todo
+app.delete('/api/todos/:id', async (req, res, next) => {
   try {
-    const insert = db.prepare('INSERT INTO todos (title, priority) VALUES (?, ?)');
-    const insertMany = db.transaction((rows) => {
-      for (const r of rows) {
-        const title = typeof r.title === 'string' ? r.title : '';
-        const priority = typeof r.priority === 'string' ? r.priority : 'medium';
-        if (title) insert.run(title, priority);
-      }
-    });
-    insertMany(items);
-    res.json({ inserted: items.length });
+    const { id } = req.params;
+    const [result] = await db.query('DELETE FROM todos WHERE id = ?', [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Todo not found' });
+    res.status(204).send();
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to import' });
+    next(err);
   }
 });
 
-// Delete a todo by id
-app.delete('/api/todos/:id', (req, res) => {
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: 'invalid id' });
-  try {
-    const stmt = db.prepare('DELETE FROM todos WHERE id = ?');
-    const info = stmt.run(id);
-    if (info.changes === 0) return res.status(404).json({ error: 'not found' });
-    res.json({ deleted: id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to delete' });
-  }
-});
-
-// Bulk delete (accepts { ids: number[] })
+// Bulk delete (expects { ids: [1,2,3] })
 app.post('/api/todos/bulk-delete', (req, res) => {
-  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
-  if (ids.length === 0) return res.status(400).json({ error: 'ids required' });
-  try {
-    const stmt = db.prepare(`DELETE FROM todos WHERE id IN (${ids.map(() => '?').join(',')})`);
-    const info = stmt.run(...ids);
-    res.json({ deleted: info.changes });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to bulk delete' });
-  }
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `DELETE FROM todos WHERE id IN (${placeholders})`;
+  (async () => {
+    try {
+      const [result] = await db.query(sql, ids);
+      res.json({ deleted: result.affectedRows });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Failed to bulk delete' });
+    }
+  })();
 });
+
+// Generic error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal Server Error' });
+});
+
+
+
+
+
+//-------------------------------Coté Serveur-------------------------------------------//
 
 // Serve the built React app (Vite) if it exists
 const distPath = path.join(__dirname, '..', 'front-end', 'to-do', 'dist');
@@ -123,7 +157,10 @@ if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 
   // For SPA client-side routing, return index.html for any unknown route
-  app.get('*', (req, res) => {
+   // For SPA client-side routing, return index.html for any unknown route.
+  // Use a RegExp to match all routes except those starting with /api so
+  // path-to-regexp doesn't treat '*' as a malformed parameter name.
+  app.get(/^\/(?!api).*/, (req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 
