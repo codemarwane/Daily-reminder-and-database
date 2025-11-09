@@ -1,10 +1,8 @@
 8/11/25	
 
 Objectif
-   1 -> reponsive design  , ajouter un logo
-   2 ->  changer de theme (adequate avec Room Tech) , et de caracteristique
-   3 -> que le front end et le back end s'active une fois    
-
+   1-> Faire un about Us sur Room Tech 
+   2-> 
 
 
 

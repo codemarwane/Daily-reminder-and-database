@@ -57,7 +57,12 @@ try {
 // GET /api/todos
 app.get('/api/todos', async (req, res, next) => {
   try {
-    const [rows] = await db.query('SELECT id, title, priority FROM todos ORDER BY id');
+    const [rows] = await db.query(
+      `SELECT id, title, priority, description, due_date AS date,
+        DATE_FORMAT(created_at, '%Y-%m-%d') AS created_at,
+        TIME_FORMAT(created_time, '%H:%i:%s') AS created_time
+       FROM todos ORDER BY id`
+    );
     res.json(rows);
   } catch (err) {
     next(err);
@@ -84,9 +89,19 @@ app.post('/api/todos', [ body('title').isString().notEmpty(), body('priority').i
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty && !errors.isEmpty()) return res.status(400).json({ errors: errors.array ? errors.array() : errors });
-      const { title, priority } = req.body || {};
-      const [result] = await db.query('INSERT INTO todos (title, priority) VALUES (?, ?)', [title, priority]);
-      const [rows] = await db.query('SELECT id, title, priority FROM todos WHERE id = ?', [result.insertId]);
+      const { title, priority, description, date } = req.body || {};
+      // insert due_date as date (if provided)
+      const [result] = await db.query(
+        'INSERT INTO todos (title, description, priority, due_date) VALUES (?, ?, ?, ?)',
+        [title, description || null, priority, date || null]
+      );
+      const [rows] = await db.query(
+        `SELECT id, title, priority, description, due_date AS date,
+          DATE_FORMAT(created_at, '%Y-%m-%d') AS created_at,
+          TIME_FORMAT(created_time, '%H:%i:%s') AS created_time
+         FROM todos WHERE id = ?`,
+        [result.insertId]
+      );
       res.status(201).json(rows[0]);
     } catch (err) {
       next(err);
@@ -98,11 +113,20 @@ app.post('/api/todos', [ body('title').isString().notEmpty(), body('priority').i
 app.put('/api/todos/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, priority } = req.body || {};
+    const { title, priority, description, date } = req.body || {};
     if (!title || !priority) return res.status(400).json({ error: 'title and priority are required' });
-    const [result] = await db.query('UPDATE todos SET title = ?, priority = ? WHERE id = ?', [title, priority, id]);
+    const [result] = await db.query(
+      'UPDATE todos SET title = ?, priority = ?, description = ?, due_date = ? WHERE id = ?',
+      [title, priority, description || null, date || null, id]
+    );
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Todo not found' });
-    const [rows] = await db.query('SELECT id, title, priority FROM todos WHERE id = ?', [id]);
+    const [rows] = await db.query(
+      `SELECT id, title, priority, description, due_date AS date,
+        DATE_FORMAT(created_at, '%Y-%m-%d') AS created_at,
+        TIME_FORMAT(created_time, '%H:%i:%s') AS created_time
+       FROM todos WHERE id = ?`,
+      [id]
+    );
     res.json(rows[0]);
   } catch (err) {
     next(err);
